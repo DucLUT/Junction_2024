@@ -1,0 +1,32 @@
+{
+  "coordinates": {
+    "minlat": 60.169461,
+    "minlon": 24.939244,
+    "maxlat": 60.170407,
+    "maxlon": 24.942361
+  },
+  "Number_of_elevators": 2,
+  "Number_of_floors": 10,
+  "Elevators": [
+    {
+      "Elevator": 1,
+      "KEN": 43407023,
+      "Number_of_stops": 10,
+      "Floor_to_floor_height_mm": 3383.83,
+      "Elevator_files": {
+        "Shaft_file": "./shaft.gltf",
+        "Elevator_file": "./elevator.gltf"
+      }
+    },
+    {
+      "Elevator": 2,
+      "KEN": 43407024,
+      "Number_of_stops": 10,
+      "Floor_to_floor_height_mm": 3383.83,
+      "Elevator_files": {
+        "Shaft_file": "./shaft.gltf",
+        "Elevator_file": "./elevator.gltf"
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "Number_of_elevators": 1,
+  "Number_of_floors": 6,
+  "Elevators": [
+    {
+      "Elevator": 1,
+      "KEN": 45203395,
+      "Number_of_stops": 6,
+      "Floor_to_floor_height_mm": 3052,
+      "Elevator_files": {
+        "Shaft_file": "./shaft.gltf",
+        "Elevator_file": "./elevator.gltf"
+      }
+    }
+  ]
+}
