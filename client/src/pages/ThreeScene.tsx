@@ -2,6 +2,7 @@ import Threebuilder from "../components/Threebuilder"
 import React, {useRef, useEffect} from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from "three/examples/jsm/Addons.js"
+
 const ThreeScene: React.FC = () => {
     const mountRef = useRef<HTMLDivElement | null>(null);
     const createCube = (x: number, y: number, z: number) => {
