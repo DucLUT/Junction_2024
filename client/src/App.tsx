@@ -1,7 +1,8 @@
 import "./App.css";
 import * as THREE from "three";
 import { useRef, useEffect } from "react";
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import { OrbitControls } from "three/examples/jsm/Addons.js";
+import Button from "./components/Button";
 
 function App() {
 	const rendererRef = useRef<HTMLDivElement>(null);
@@ -54,7 +55,12 @@ function App() {
 		};
 	}, []);
 
-	return <div ref={rendererRef}></div>;
+	return (
+		<>
+			<div ref={rendererRef}></div>
+			<Button text="Click me" />
+		</>
+	);
 }
 
 export default App;
