@@ -48,6 +48,30 @@ def midpoint(x1, y1, x2, y2):
     return (x_mid, y_mid)
 
 
+# Pytesseract implementation
+# def inpaint_text(image: np.ndarray) -> np.ndarray:
+#     # Convert image to RGB for pytesseract
+#     rgb_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+#     # Use pytesseract to get bounding boxes for text
+#     data = pytesseract.image_to_data(rgb_image, output_type=pytesseract.Output.DICT)
+
+#     # Initialize a mask for inpainting
+#     mask = np.zeros(image.shape[:2], dtype="uint8")
+
+#     # Loop through each detected text box and create a mask
+#     for i in range(len(data['text'])):
+#         if int(data['conf'][i]) > 60:  # Confidence threshold, adjust as needed
+#             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+#             cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)  # Fill the mask at text location
+
+#     # Inpaint the text regions using the mask
+#     inpainted_image = cv2.inpaint(image, mask, 7, cv2.INPAINT_NS)
+#     cv2.imwrite("inpaint_text.jpg", inpainted_image)
+
+#     return inpainted_image
+
+
 def inpaint_text(
     image: np.ndarray, pipeline: keras_ocr.pipeline.Pipeline
 ) -> np.ndarray:
