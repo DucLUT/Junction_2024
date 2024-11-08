@@ -1,6 +1,7 @@
 import "./App.css";
 import * as THREE from "three";
 import { useRef, useEffect } from "react";
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
 function App() {
 	const rendererRef = useRef<HTMLDivElement>(null);
@@ -26,9 +27,17 @@ function App() {
 			new THREE.MeshBasicMaterial({ color: 0xff0000 })
 		);
 		scene.add(cube);
+		//Add orbit controls
+		const controls = new OrbitControls(camera, renderer.domElement);
+		controls.enableDamping = true;
+		controls.dampingFactor = 0.25;
+		controls.enableZoom = true;
+		controls.screenSpacePanning = false;
+		controls.maxPolarAngle = Math.PI / 2;
 
 		const animate = () => {
 			requestAnimationFrame(animate);
+			controls.update();
 			renderer.render(scene, camera);
 		};
 		animate();
