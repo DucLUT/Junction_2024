@@ -68,7 +68,7 @@ const ThreeScene: React.FC = () => {
     
         for (let i = 0; i < numFloors; i++) {
           const floorPlan = floorPlans[i];
-          const floor = createFloor(100, 100, i * 10); // Adjust floor size as needed
+          const floor = createFloor(floorPlan.walls, i * 10); // Adjust height as needed
           building.add(floor);
     
           // Add walls for each floor
@@ -110,15 +110,32 @@ const ThreeScene: React.FC = () => {
         
             return wall;
           };
-  // Function to create a floor based on given width, depth, and y position
-        const createFloor = (width: number, depth: number, y: number) => {
+          const createFloor = (walls: { start: [number, number], end: [number, number] }[], y: number) => {
+            // Find the min and max coordinates based on wall coordinates
+            let minX = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxZ = -Infinity;
+          
+            walls.forEach(({ start, end }) => {
+              minX = Math.min(minX, start[0], end[0]);
+              maxX = Math.max(maxX, start[0], end[0]);
+              minZ = Math.min(minZ, start[1], end[1]);
+              maxZ = Math.max(maxZ, start[1], end[1]);
+            });
+          
+            const width = maxX - minX;
+            const depth = maxZ - minZ;
+          
             const geometry = new THREE.PlaneGeometry(width, depth);
             const material = new THREE.MeshBasicMaterial({ color: 0xAAAAAA, side: THREE.DoubleSide });
             const floor = new THREE.Mesh(geometry, material);
-            floor.rotation.x = -Math.PI / 2; // Rotate to make it horizontal
-            floor.position.y = y;
+          
+            // Position the floor at the correct height (y) and centered based on min/max
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.set((minX + maxX) / 2, y, (minZ + maxZ) / 2);
+          
             return floor;
-        };
+          };
+          
 
 
 
