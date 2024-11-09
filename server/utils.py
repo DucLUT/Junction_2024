@@ -2,6 +2,7 @@
 This module provides functions for extracting walls from floorplan images.
 """
 
+import os
 import logging
 from typing import List
 import cv2
@@ -12,6 +13,8 @@ import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 
 def read_pdf_layers(pdf_bytes: bytes) -> List:
@@ -203,36 +206,125 @@ def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
 #orginal get_outer_contour
 def get_outer_contour(edges: np.ndarray) -> np.ndarray:
     """
-    Extracts the outermost contour from the precomputed edges by combining all detected wall edges.
+    Generate a new image of the same floorplan with only the walls using DALL-E.
 
     Args:
-        edges (np.ndarray): An edge-detected binary image where walls are represented
-                            by white pixels (255) on a black background (0).
+        image (Image): The input image.
 
     Returns:
-        np.ndarray: An image containing only the outer contour of the floorplan.
+        np.ndarray: The generated image as a numpy array.
     """
-    # Ensure edges is a numpy array
-    if not isinstance(edges, np.ndarray):
-        raise ValueError("The 'edges' parameter must be a numpy array.")
+    openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    if openai_api_key is None:
+        raise ValueError("No OpenAI API key found")
 
-    # Step 1: Remove small artifacts from the edges using morphological operations
-    cleaned_edges = remove_artifacts(edges, size=7, iterations=2)
+    client = OpenAI(api_key=openai_api_key)
 
-    # Step 2: Find all contours in the cleaned edge image
+    size_x, size_y = image.size
+    if size_x > 1024 or size_y > 1024:
+        image.thumbnail((1024, 1024))
+
+    # Ensure the size parameter is one of the allowed values
+    allowed_sizes = ["256x256", "512x512", "1024x1024", "1024x1792", "1792x1024"]
+    size = f"{image.size[0]}x{image.size[1]}"
+    if size not in allowed_sizes:
+        size = "1024x1024"
+
+    response = client.images.generate(
+        model="dall-e-3",
+        prompt="Remove everything except for the walls from the image of the floorplan. Do not do anything else to the image, it should be completely the same as the original, except for only having the walls of the floorplan.",
+        size=size,
+        quality="standard",
+        n=1,
+    )
+
+    image_url: str | None = response.data[0].url
+    if image_url is None:
+        raise ValueError("No image URL found in the response")
+
+    return image_url
+
+
+def remove_small_artifacts(image: np.ndarray, min_size: int = 500) -> np.ndarray:
+    """
+    Remove small artifacts and noise from the image.
+
+    Args:
+        image (np.ndarray): The input image.
+        min_size (int): Minimum size of artifacts to keep.
+
+    Returns:
+        np.ndarray: Image with small artifacts removed.
+    """
+    nb_components, output, stats, _ = cv2.connectedComponentsWithStats(
+        image, connectivity=8
+    )
+    sizes = stats[1:, -1]
+    nb_components = nb_components - 1
+
+    cleaned_image = np.zeros(output.shape, dtype=np.uint8)
+    for i in range(nb_components):
+        if sizes[i] >= min_size:
+            cleaned_image[output == i + 1] = 255
+
+    return cleaned_image
+
+
+def keep_straight_lines(image: np.ndarray) -> np.ndarray:
+    """
+    Keep only the straight lines in the image using the Hough Line Transform.
+
+    Args:
+        image (np.ndarray): The input image.
+
+    Returns:
+        np.ndarray: The image with only straight lines.
+    """
+    # Perform edge detection
+    edges = cv2.Canny(image, 50, 150)
+
+    # Use the Hough Line Transform to detect straight lines
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10
+    )
+
+    # Create a blank image to draw the lines
+    line_image = np.zeros_like(edges)
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(line_image, (x1, y1), (x2, y2), 255, 2)
+
+    return line_image
+
+
+def get_outer_contour(image: Image) -> np.ndarray:
+    """
+    Get the outer contour of all the walls, just the outer shell.
+
+    Args:
+        image (np.ndarray): The input image.
+
+    Returns:
+        np.ndarray: The image with the outer contour of all the walls.
+    """
+    # Preprocess the image
+    preprocessed_image = preprocess_image(image)
+
+    # Perform edge detection
+    edges = cv2.Canny(preprocessed_image, 50, 150)
+
+    # Remove artifacts
+    cleaned_edges = remove_artifacts(edges, 7, 1)
+
+    # Find the outer contour
     contours, _ = cv2.findContours(
         cleaned_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    # Step 3: Concatenate all contour points into a single array to form a combined outline
-    all_points = np.vstack(contours)
-
-    # Step 4: Compute the convex hull of the combined points to get a single outer boundary
-    hull = cv2.convexHull(all_points)
-
-    # Step 5: Draw the outer contour on a blank image
-    outer_contour_image = np.zeros_like(edges)
-    cv2.drawContours(outer_contour_image, [hull], -1, (255, 255, 255), thickness=2)
+    # Create a blank image to draw the outer contour
+    outer_contour_image = np.zeros_like(cleaned_edges)
+    cv2.drawContours(outer_contour_image, contours, -1, (255, 255, 255), 2)
 
     return outer_contour_image
 
@@ -320,9 +412,19 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     wall_contours = get_wall_contours(cleaned_image)
     logger.info("Wall contours extracted.")
 
-    outer_contour = get_outer_contour(edges)
+    outer_contour = get_outer_contour(image_initial)
     cv2.imwrite("outer_contour.jpg", outer_contour)
     logger.info("Outer contour drawn. Image written to outer_contour.jpg")
+
+    outer_contour_lines = keep_straight_lines(outer_contour)
+    cv2.imwrite("outer_contour_lines.jpg", outer_contour_lines)
+    logger.info(
+        "Outer contour lines extracted. Image written to outer_contour_lines.jpg"
+    )
+
+    outer_contour_cleaned = remove_small_artifacts(outer_contour)
+    cv2.imwrite("outer_contour_cleaned.jpg", outer_contour_cleaned)
+    logger.info("Outer contour cleaned. Image written to outer_contour_cleaned.jpg")
 
     # Draw on blank image
     blank_image = np.zeros_like(cleaned_image)
