@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import fitz
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,6 +61,62 @@ def preprocess_image(image: Image) -> np.ndarray:
     blurred_image = cv2.GaussianBlur(resized_image, (5, 5), 0)
 
     return blurred_image
+def process_contours(image: np.ndarray) -> np.ndarray:
+    """
+    Process the preprocessed image to remove dotted lines, fill contours, smooth contours,
+    and draw the final contours on the image.
+
+    Args:
+        image (np.ndarray): The preprocessed image.
+
+    Returns:
+        np.ndarray: The image with the final contours drawn.
+    """
+    # Convert the image to grayscale and resize
+    image_gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    scale_percent = 200  # Adjust as needed
+    width = int(image_gray.shape[1] * scale_percent / 100)
+    height = int(image_gray.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized_image = cv2.resize(image_gray, dim, interpolation=cv2.INTER_AREA)
+
+    # Apply Gaussian blur
+    blurred_image = cv2.GaussianBlur(resized_image, (5, 5), 0)
+
+    # Edge detection
+    edges = cv2.Canny(blurred_image, 50, 150)
+    cv2.imwrite("edges_debug.jpg", edges)  # Debug output
+
+    # Remove small artifacts
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    cleaned_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    # Find contours
+    contours, _ = cv2.findContours(cleaned_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Create a blank image to draw contours
+    contour_image = np.zeros_like(cleaned_edges)
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 1000:  # Use an appropriate threshold for your image scale
+            # Draw only significant contours
+            cv2.drawContours(contour_image, [contour], -1, (255, 255, 255), thickness=cv2.FILLED)
+
+    # Smooth the contours
+    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    smoothed_contours = cv2.morphologyEx(contour_image, cv2.MORPH_CLOSE, smooth_kernel, iterations=1)
+
+    # Convert to color for final display
+    final_image = cv2.cvtColor(smoothed_contours, cv2.COLOR_GRAY2BGR)
+
+    # Draw contours on the original image
+    contours_final, _ = cv2.findContours(smoothed_contours, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours_final:
+        cv2.drawContours(final_image, [contour], -1, (0, 255, 0), 3)
+
+    return final_image
+
 
 
 def remove_artifacts(edges: np.ndarray, size: int, iterations: int = 1) -> np.ndarray:
@@ -143,7 +200,7 @@ def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
 
 #     return outer_contour_image
 
-
+#orginal get_outer_contour
 def get_outer_contour(edges: np.ndarray) -> np.ndarray:
     """
     Extracts the outermost contour from the precomputed edges by combining all detected wall edges.
@@ -178,6 +235,35 @@ def get_outer_contour(edges: np.ndarray) -> np.ndarray:
     cv2.drawContours(outer_contour_image, [hull], -1, (255, 255, 255), thickness=2)
 
     return outer_contour_image
+
+
+def sort_contours(cnts, method="left-to-right"):
+    # initialize the reverse flag and sort index
+    reverse = False
+    i = 0
+
+    # handle if we need to sort in reverse
+    if method == "right-to-left" or method == "bottom-to-top":
+        reverse = True
+
+    # handle if we are sorting against the y-coordinate rather than
+    # the x-coordinate of the bounding box
+    if method == "top-to-bottom" or method == "bottom-to-top":
+        i = 1
+
+    # construct the list of bounding boxes and sort them from top to
+    # bottom
+    boundingBoxes = [cv2.boundingRect(c) for c in cnts]
+    (cnts, boundingBoxes) = zip(*sorted(zip(cnts, boundingBoxes),
+                                        key=lambda b: b[1][i], reverse=reverse))
+
+    # return the list of sorted contours and bounding boxes
+    return cnts, boundingBoxes
+
+
+
+
+
 
 
 def extract_walls(image_initial: Image) -> List[np.ndarray]:

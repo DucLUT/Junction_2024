@@ -6,7 +6,7 @@ import io
 import logging
 import subprocess
 from typing import List
-
+import cv2
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from PIL import Image
 import pdf2image
@@ -56,6 +56,7 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
         try:
             logger.info("Reading image file")
             image = Image.open(io.BytesIO(contents))
+
         except Exception as exc:
             raise HTTPException(
                 status_code=400, detail=f"Invalid image file: {exc}"
@@ -65,6 +66,13 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No valid image found")
 
     try:
+        processed_image = utils.process_contours(image)
+
+        # Save the processed image to a file
+        processed_image_path = "processed_image.jpg"
+        cv2.imwrite(processed_image_path, processed_image)  
+        logger.info(f"Processed image saved to {processed_image_path}")
+        utils.preprocess_image(image)
         wall_contours = utils.extract_walls(image)
         contours_list = [
             contour.tolist() for contour in wall_contours
