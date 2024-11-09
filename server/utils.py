@@ -4,7 +4,7 @@ This module provides functions for extracting walls from floorplan images.
 
 import os
 import logging
-from typing import List
+from typing import List,Tuple
 import cv2
 import numpy as np
 from PIL import Image
@@ -14,7 +14,7 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+
 
 
 def read_pdf_layers(pdf_bytes: bytes) -> List:
@@ -50,8 +50,12 @@ def preprocess_image(image: Image) -> np.ndarray:
     Returns:
         np.ndarray: The preprocessed image.
     """
-    # Convert the image to grayscale
-    image_gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    # Convert the image to grayscale if it is not already
+    image_array = np.array(image)
+    if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+        image_gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
+    else:
+        image_gray = image_array
 
     # Resize the image to make the lines thicker
     scale_percent = 200  # Percent of original size
@@ -62,7 +66,6 @@ def preprocess_image(image: Image) -> np.ndarray:
 
     # Apply Gaussian blur to smooth the image
     blurred_image = cv2.GaussianBlur(resized_image, (5, 5), 0)
-
     return blurred_image
 def process_contours(image: np.ndarray) -> np.ndarray:
     """
@@ -75,51 +78,79 @@ def process_contours(image: np.ndarray) -> np.ndarray:
     Returns:
         np.ndarray: The image with the final contours drawn.
     """
-    # Convert the image to grayscale and resize
     image_gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
-    scale_percent = 200  # Adjust as needed
+    scale_percent = 200  # Percent of original size
     width = int(image_gray.shape[1] * scale_percent / 100)
     height = int(image_gray.shape[0] * scale_percent / 100)
     dim = (width, height)
     resized_image = cv2.resize(image_gray, dim, interpolation=cv2.INTER_AREA)
 
-    # Apply Gaussian blur
-    blurred_image = cv2.GaussianBlur(resized_image, (5, 5), 0)
+    # Apply Gaussian blur to smooth the image
+    preprocessed_image = cv2.GaussianBlur(resized_image, (5, 5), 0)
+    # Remove dotted lines
+    cnts = cv2.findContours(preprocessed_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < 5000:
+            cv2.drawContours(preprocessed_image, [c], -1, (0, 0, 0), -1)
 
-    # Edge detection
-    edges = cv2.Canny(blurred_image, 50, 150)
-    cv2.imwrite("edges_debug.jpg", edges)  # Debug output
+    # Fill contours
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    close = 255 - cv2.morphologyEx(preprocessed_image, cv2.MORPH_CLOSE, close_kernel, iterations=6)
+    cnts = cv2.findContours(close, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < 15000:
+            cv2.drawContours(close, [c], -1, (0, 0, 0), -1)
 
-    # Remove small artifacts
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    cleaned_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Smooth contours
+    close = 255 - close
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 20))
+    opening = cv2.morphologyEx(close, cv2.MORPH_OPEN, open_kernel, iterations=3)
 
-    # Find contours
-    contours, _ = cv2.findContours(cleaned_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Convert preprocessed_image to color
+    preprocessed_image_color = cv2.cvtColor(preprocessed_image, cv2.COLOR_GRAY2BGR)
 
-    # Create a blank image to draw contours
-    contour_image = np.zeros_like(cleaned_edges)
-    
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area > 1000:  # Use an appropriate threshold for your image scale
-            # Draw only significant contours
-            cv2.drawContours(contour_image, [contour], -1, (255, 255, 255), thickness=cv2.FILLED)
+    # Find contours and draw result
+    cnts = cv2.findContours(opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+    for c in cnts:
+        cv2.drawContours(preprocessed_image_color, [c], -1, (36, 255, 12), 3)
 
-    # Smooth the contours
-    smooth_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    smoothed_contours = cv2.morphologyEx(contour_image, cv2.MORPH_CLOSE, smooth_kernel, iterations=1)
+    return preprocessed_image_color
 
-    # Convert to color for final display
-    final_image = cv2.cvtColor(smoothed_contours, cv2.COLOR_GRAY2BGR)
 
-    # Draw contours on the original image
-    contours_final, _ = cv2.findContours(smoothed_contours, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for contour in contours_final:
-        cv2.drawContours(final_image, [contour], -1, (0, 255, 0), 3)
+def keep_straight_lines(image: np.ndarray) -> Tuple[np.ndarray, List[Tuple[int, int, int, int]]]:
+    """
+    Keep only the straight lines in the image using the Hough Line Transform.
 
-    return final_image
+    Args:
+        image (np.ndarray): The input image.
 
+    Returns:
+        Tuple[np.ndarray, List[Tuple[int, int, int, int]]]: The image with only straight lines and the coordinates of the lines.
+    """
+    # Perform edge detection
+    edges = cv2.Canny(image, 50, 150)
+
+    # Use the Hough Line Transform to detect straight lines
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10
+    )
+
+    # Create a blank image to draw the lines
+    line_image = np.zeros_like(edges)
+    line_coordinates = []
+
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(line_image, (x1, y1), (x2, y2), 255, 2)
+            line_coordinates.append((x1, y1, x2, y2))
+
+    return line_image, line_coordinates
 
 
 def remove_artifacts(edges: np.ndarray, size: int, iterations: int = 1) -> np.ndarray:
@@ -270,32 +301,7 @@ def remove_small_artifacts(image: np.ndarray, min_size: int = 500) -> np.ndarray
     return cleaned_image
 
 
-def keep_straight_lines(image: np.ndarray) -> np.ndarray:
-    """
-    Keep only the straight lines in the image using the Hough Line Transform.
 
-    Args:
-        image (np.ndarray): The input image.
-
-    Returns:
-        np.ndarray: The image with only straight lines.
-    """
-    # Perform edge detection
-    edges = cv2.Canny(image, 50, 150)
-
-    # Use the Hough Line Transform to detect straight lines
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=10
-    )
-
-    # Create a blank image to draw the lines
-    line_image = np.zeros_like(edges)
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            cv2.line(line_image, (x1, y1), (x2, y2), 255, 2)
-
-    return line_image
 
 
 def get_outer_contour(image: Image) -> np.ndarray:
@@ -369,10 +375,13 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
         List[np.ndarray]: A list of wall contours.
     """
     logger.info("Processing image...")
-
     # Preprocess the image
     preprocessed_image_array: np.ndarray = preprocess_image(image_initial)
     logger.info("Image preprocessed.")
+
+    # Ensure the image is in grayscale
+    if len(preprocessed_image_array.shape) == 3 and preprocessed_image_array.shape[2] == 3:
+        preprocessed_image_array = cv2.cvtColor(preprocessed_image_array, cv2.COLOR_RGB2GRAY)
 
     # Apply adaptive thresholding
     binary_img = cv2.adaptiveThreshold(
@@ -396,7 +405,6 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     logger.info(
         "First artifact removal step completed. Image written to cleaned_image_1.jpg"
     )
-
     artifact_removal_step: int = 2
     while artifact_removal_step < 4:
         size = 3
@@ -411,25 +419,4 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
 
     wall_contours = get_wall_contours(cleaned_image)
     logger.info("Wall contours extracted.")
-
-    outer_contour = get_outer_contour(image_initial)
-    cv2.imwrite("outer_contour.jpg", outer_contour)
-    logger.info("Outer contour drawn. Image written to outer_contour.jpg")
-
-    outer_contour_lines = keep_straight_lines(outer_contour)
-    cv2.imwrite("outer_contour_lines.jpg", outer_contour_lines)
-    logger.info(
-        "Outer contour lines extracted. Image written to outer_contour_lines.jpg"
-    )
-
-    outer_contour_cleaned = remove_small_artifacts(outer_contour)
-    cv2.imwrite("outer_contour_cleaned.jpg", outer_contour_cleaned)
-    logger.info("Outer contour cleaned. Image written to outer_contour_cleaned.jpg")
-
-    # Draw on blank image
-    blank_image = np.zeros_like(cleaned_image)
-    cv2.drawContours(blank_image, wall_contours, -1, (255, 255, 255), 2)
-    cv2.imwrite("walls_contours.jpg", blank_image)
-    logger.info("Contours drawn on blank image. Image written to walls_contours.jpg")
-
     return wall_contours
