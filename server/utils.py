@@ -38,24 +38,26 @@ def preprocess_image(image: Image) -> np.ndarray:
     return blurred_image
 
 
-def get_cleaned_edges(edges: np.ndarray) -> np.ndarray:
+def unwanted_features_mask(edges: np.ndarray) -> np.ndarray:
     """
     Apply morphological operations to clean up the edges in the image.
     """
     # Apply larger morphological kernel to clean up the image
     kernel = np.ones((7, 7), np.uint8)  # Increase kernel size for larger structures
-    cleaned_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-    cleaned_edges = cv2.morphologyEx(cleaned_edges, cv2.MORPH_OPEN, kernel)
+    unwanted_features = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    unwanted_features = cv2.morphologyEx(unwanted_features, cv2.MORPH_OPEN, kernel)
 
     # Apply dilation followed by erosion with more iterations
-    cleaned_edges = cv2.dilate(
-        cleaned_edges, kernel, iterations=3
+    unwanted_features = cv2.dilate(
+        unwanted_features, kernel, iterations=3
     )  # Increase iterations
-    cleaned_edges = cv2.erode(cleaned_edges, kernel, iterations=3)
+    cv2.imwrite("unwanted_features_before_erode.jpg", unwanted_features)
 
-    cv2.imwrite("cleaned_edges.jpg", cleaned_edges)
+    unwanted_features = cv2.erode(unwanted_features, kernel, iterations=2)
 
-    return cleaned_edges
+    cv2.imwrite("unwanted_features.jpg", unwanted_features)
+
+    return unwanted_features
 
 
 def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
@@ -118,10 +120,10 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     edges = cv2.Canny(binary_img, 50, 150)
     cv2.imwrite("edges.jpg", edges)
 
-    # Clean up the edges
-    cleaned_edges = get_cleaned_edges(edges)
+    # Mask for unwanted features
+    unwanted_features = unwanted_features_mask(edges)
 
-    wall_only_mask = cv2.bitwise_not(cleaned_edges)
+    wall_only_mask = cv2.bitwise_not(unwanted_features)
     # Mask the walls in the edges image
     walls_extracted = cv2.bitwise_and(edges, edges, mask=wall_only_mask)
     cv2.imwrite("walls_extracted.jpg", walls_extracted)
