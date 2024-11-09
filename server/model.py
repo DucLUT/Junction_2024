@@ -7,7 +7,6 @@ import torch
 from torch import nn, optim
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
-from torch.amp import autocast, GradScaler
 from PIL import Image
 import numpy as np
 import tqdm  # For progress bar
@@ -251,7 +250,6 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
         # Progress bar
         loop = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", ncols=100)
 
-        scaler = GradScaler(device="cuda")
         for batch_idx, batch in enumerate(loop):
             images, masks = batch
             # Reshape images and masks to merge patches per batch into batch dimension
@@ -266,17 +264,15 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Zero the gradients
             optimizer.zero_grad()
 
-            with autocast(device_type="cuda"):
-                # Forward pass
-                outputs = model(images)
+            # Forward pass
+            outputs = model(images)
 
-                # Compute loss
-                loss = criterion(outputs, masks)
+            # Compute loss
+            loss = criterion(outputs, masks)
 
             # Backward pass and optimization
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            loss.backward()
+            optimizer.step()
 
             # Log GPU memory usage and loss
             if torch.cuda.is_available():
@@ -298,6 +294,14 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Update the progress bar
             epoch_loss += loss.item()
             loop.set_postfix(loss=epoch_loss / (batch_idx + 1))
+
+            # Save model after every 20 batches
+            if (batch_idx + 1) % 20 == 0:
+                batch_model_path = os.path.join(
+                    ".", f"model_epoch_{epoch+1}_batch_{batch_idx+1}.pth"
+                )
+                torch.save(model.state_dict(), batch_model_path)
+                logger.info("Saved model to %s", batch_model_path)
 
         logger.info("Epoch %d - Loss: %.4f", epoch + 1, epoch_loss / num_batches)
 
@@ -395,9 +399,9 @@ def main():
     val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
 
     train_loader = DataLoader(
-        dataset, batch_size=4, sampler=train_sampler, num_workers=2
+        dataset, batch_size=2, sampler=train_sampler, num_workers=2
     )
-    val_loader = DataLoader(dataset, batch_size=4, sampler=val_sampler, num_workers=2)
+    val_loader = DataLoader(dataset, batch_size=2, sampler=val_sampler, num_workers=2)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels=3, out_channels=1).to(device)
