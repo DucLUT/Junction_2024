@@ -12,7 +12,8 @@ import numpy as np
 import tqdm  # For progress bar
 from sklearn.model_selection import train_test_split
 
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -68,11 +69,11 @@ class FloorplanSegmentationDataset(Dataset):
             img_path = os.path.join(self.floorplan_dir, img_file)
             image = Image.open(img_path).convert("RGB")
             mask = self.get_mask(image, img_file)
-            img_patches, _ = self.extract_all_patches(image, mask)
+            img_patches, _ = self.extract_all_patches(image, mask, img_file)
             total_patches += len(img_patches)
 
         # Log total number of patches
-        logger.info(f"Total patches in the dataset: {total_patches}")
+        logger.info("Total patches in the dataset: %d", total_patches)
 
         return total_patches // self.patches_per_batch
 
@@ -91,7 +92,7 @@ class FloorplanSegmentationDataset(Dataset):
             mask = self.get_mask(image, img_name)
 
             # Extract all patches from this image
-            img_patches, mask_patches = self.extract_all_patches(image, mask)
+            img_patches, mask_patches = self.extract_all_patches(image, mask, img_name)
 
             num_patches = len(img_patches)
             if total_patches + num_patches > idx * self.patches_per_batch:
@@ -105,7 +106,7 @@ class FloorplanSegmentationDataset(Dataset):
             total_patches += num_patches
 
         # Log progress of loading patches
-        logger.info(f"Loaded {len(img_batch)} patches for batch {idx}")
+        logger.info("Loaded %d patches for batch %d", len(img_batch), idx)
 
         if self.transform:
             img_batch = [self.transform(patch) for patch in img_batch]
@@ -114,7 +115,11 @@ class FloorplanSegmentationDataset(Dataset):
                 for mask_patch in mask_batch
             ]
 
-        return torch.stack(img_batch), torch.stack(mask_batch)
+        # Stack the patches into a 4D tensor
+        img_batch = torch.stack(img_batch)
+        mask_batch = torch.stack(mask_batch)
+
+        return img_batch, mask_batch
 
     def get_mask(self, image: Image.Image, filename: str):
         """
@@ -139,7 +144,7 @@ class FloorplanSegmentationDataset(Dataset):
 
         return Image.fromarray(mask)
 
-    def extract_all_patches(self, image: Image.Image, mask: Image.Image):
+    def extract_all_patches(self, image: Image.Image, mask: Image.Image, filename: str):
         """
         Extract all patches from the image and mask using sliding window.
         """
@@ -160,7 +165,7 @@ class FloorplanSegmentationDataset(Dataset):
                 mask_patches.append(mask_patch)
 
         # Log the number of patches extracted
-        logger.info(f"Extracted {len(img_patches)} patches from image.")
+        logger.info("Extracted %d patches from image %s.", len(img_patches), filename)
         return img_patches, mask_patches
 
 
@@ -247,6 +252,13 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
 
         for batch_idx, batch in enumerate(loop):
             images, masks = batch
+            # Reshape images and masks to merge patches per batch into batch dimension
+            batch_size, patches_per_batch, channels, height, width = images.shape
+            images = images.view(
+                batch_size * patches_per_batch, channels, height, width
+            )
+            masks = masks.view(batch_size * patches_per_batch, 1, height, width)
+
             images, masks = images.cuda(), masks.cuda()
 
             # Zero the gradients
@@ -265,43 +277,92 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Log GPU memory usage and loss
             if torch.cuda.is_available():
                 logger.info(
-                    f"GPU Memory Allocated (after step {batch_idx}): {torch.cuda.memory_allocated() / 1024**2:.2f} MB"
+                    "Epoch %d, Batch %d/%d - GPU Memory Allocated: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_allocated() / 1024**2,
                 )
                 logger.info(
-                    f"GPU Memory Cached (after step {batch_idx}): {torch.cuda.memory_reserved() / 1024**2:.2f} MB"
+                    "Epoch %d, Batch %d/%d - GPU Memory Cached: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_reserved() / 1024**2,
                 )
 
             # Update the progress bar
             epoch_loss += loss.item()
             loop.set_postfix(loss=epoch_loss / (batch_idx + 1))
 
+            # Save model after every 20 batches
+            if (batch_idx + 1) % 20 == 0:
+                batch_model_path = os.path.join(
+                    ".", f"model_epoch_{epoch+1}_batch_{batch_idx+1}.pth"
+                )
+                torch.save(model.state_dict(), batch_model_path)
+                logger.info("Saved model to %s", batch_model_path)
+
         logger.info("Epoch %d - Loss: %.4f", epoch + 1, epoch_loss / num_batches)
+
+        # Save model after every epoch
+        model_path = os.path.join(".", f"model_epoch_{epoch+1}.pth")
+        torch.save(model.state_dict(), model_path)
+        logger.info("Saved model to %s", model_path)
 
     return model
 
 
 def evaluate_model(model, val_loader, device):
+    """
+    Evaluate the U-Net model on the validation data.
+
+    Args:
+        model (nn.Module): The U-Net model.
+        val_loader (DataLoader): DataLoader for the validation data.
+        device (torch.device): The device (CPU or CUDA) on which the model and data are loaded.
+    """
     model.eval()  # Set the model to evaluation mode
-    with torch.no_grad():  # Disable gradient calculation for evaluation
+    total_dice_score = 0.0
+    num_samples = 0
+
+    with torch.no_grad():  # Disable gradient computation during evaluation
         for batch_idx, batch in enumerate(val_loader):
-            logger.info("Processing batch %d", batch_idx)
+            logger.info("Processing batch %d", batch_idx + 1)
 
-            # Extract images and masks from the batch
-            images = batch[0]  # The first element is the image tensor
-            masks = batch[1]  # The second element is the mask tensor
-
-            # Move tensors to the correct device
+            images, masks = batch
             images, masks = images.to(device), masks.to(device)
 
             # Forward pass
             outputs = model(images)
 
-            # Compute the loss
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs, masks)
+            # Convert logits to binary predictions (0 or 1) using a threshold of 0.5
+            preds = torch.sigmoid(outputs) > 0.5
 
-            # Log or print evaluation results (loss, etc.)
+            # Ensure preds and masks are float for Dice score computation
+            preds = preds.float()
+            masks = masks.float()
 
-            logger.info("Loss: %.4f", loss.item())
+            # Calculate intersection and union for Dice score
+            intersection = (preds * masks).sum()
+            union = preds.sum() + masks.sum()
+
+            # Avoid division by zero by checking if the intersection and union are both zero
+            if union + intersection > 0:
+                dice_score = 2 * intersection / (union + intersection)
+            else:
+                dice_score = torch.tensor(
+                    1.0
+                )  # If both are empty, assume perfect match
+
+            total_dice_score += dice_score.item()
+            num_samples += 1
+
+            logger.info("Batch %d - Dice Score: %.4f", batch_idx + 1, dice_score.item())
+
+    # Calculate average Dice score
+    avg_dice_score = total_dice_score / num_samples if num_samples > 0 else 0.0
+    logger.info("Average Dice Score: %.4f", avg_dice_score)
 
 
 def main():
@@ -326,10 +387,21 @@ def main():
         stride=(128, 128),
         limit=10,
     )
-    train_data, val_data = train_test_split(dataset, test_size=0.2, random_state=42)
 
-    train_loader = DataLoader(train_data, batch_size=1, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_data, batch_size=1, shuffle=False, num_workers=4)
+    # Split dataset into training and validation sets
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))
+    split = int(np.floor(0.2 * dataset_size))
+    np.random.shuffle(indices)
+    train_indices, val_indices = indices[split:], indices[:split]
+
+    train_sampler = torch.utils.data.SubsetRandomSampler(train_indices)
+    val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
+
+    train_loader = DataLoader(
+        dataset, batch_size=1, sampler=train_sampler, num_workers=1
+    )
+    val_loader = DataLoader(dataset, batch_size=1, sampler=val_sampler, num_workers=1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels=3, out_channels=1).to(device)
@@ -346,7 +418,7 @@ def main():
     # Save the trained model
     save_path = "model.pth"
     torch.save(trained_model.state_dict(), save_path)
-    logger.info(f"Trained model saved at {save_path}")
+    logger.info("Trained model saved at %s", save_path)
 
     logger.info("Starting evaluation...")
     evaluate_model(trained_model, val_loader, device)
