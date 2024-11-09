@@ -89,6 +89,16 @@ def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
     return wall_contours
 
 
+def draw_outer_contour(edges: np.ndarray) -> np.ndarray:
+    """
+    Draw the outer contour of the image.
+    """
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    outer_contour = np.zeros_like(edges)
+    cv2.drawContours(outer_contour, contours, -1, (255, 255, 255), 2)
+    return outer_contour
+
+
 def extract_walls(image_initial: Image) -> List[np.ndarray]:
     """
     Extract wall contours from the initial image.
@@ -142,6 +152,9 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
 
     wall_contours = get_wall_contours(cleaned_image)
     logger.info("Wall contours extracted.")
+
+    outer_contour = draw_outer_contour(edges)
+    cv2.imwrite("outer_contour.jpg", outer_contour)
 
     # Draw on blank image
     blank_image = np.zeros_like(cleaned_image)
