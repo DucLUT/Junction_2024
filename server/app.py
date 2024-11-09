@@ -42,21 +42,6 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
     logger.info("Headers: %s", request.headers)
     logger.info("Received file: %s", file.filename)
 
-    # Check if Tesseract is installed
-    try:
-        subprocess.run(
-            ["tesseract", "--version"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Tesseract is not installed or it's not in your PATH. "
-            "See README file for more information.",
-        ) from exc
-
     if not file:
         raise HTTPException(status_code=400, detail="No file uploaded")
 
@@ -64,7 +49,7 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
     image = None
     if file.content_type == "application/pdf":
         logger.info("Converting PDF to image")
-        utils.read_pdf_layers(contents)
+        # utils.read_pdf_layers(contents)
         # there is no utils pdf to image function
         image = pdf2image.convert_from_bytes(contents)[0]
     else:

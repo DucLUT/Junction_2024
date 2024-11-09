@@ -113,14 +113,66 @@ def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
     return wall_contours
 
 
-def draw_outer_contour(edges: np.ndarray) -> np.ndarray:
+# def get_outer_contour(image: Image) -> np.ndarray:
+#     """
+#     Get the outer contour of all the walls, just the outer shell.
+
+#     Args:
+#         image (np.ndarray): The input image.
+
+#     Returns:
+#         np.ndarray: The image with the outer contour of all the walls.
+#     """
+#     # Preprocess the image
+#     preprocessed_image = preprocess_image(image)
+
+#     # Perform edge detection
+#     edges = cv2.Canny(preprocessed_image, 50, 150)
+
+#     # Remove artifacts
+#     cleaned_edges = remove_artifacts(edges, 7, 1)
+
+#     # Find the outer contour
+#     contours, _ = cv2.findContours(
+#         cleaned_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+#     )
+
+#     # Create a blank image to draw the outer contour
+#     outer_contour_image = np.zeros_like(cleaned_edges)
+#     cv2.drawContours(outer_contour_image, contours, -1, (255, 255, 255), 2)
+
+#     return outer_contour_image
+
+
+def get_outer_contour(edges: np.ndarray) -> np.ndarray:
     """
-    Draw the outer contour of the image.
+    Extracts the outermost contour from the precomputed edges by combining all detected wall edges.
+
+    Args:
+        edges (np.ndarray): An edge-detected binary image where walls are represented by white pixels (255) on a black background (0).
+
+    Returns:
+        np.ndarray: An image containing only the outer contour of the floorplan.
     """
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    outer_contour = np.zeros_like(edges)
-    cv2.drawContours(outer_contour, contours, -1, (255, 255, 255), 2)
-    return outer_contour
+    # Step 1: Remove small artifacts from the edges using morphological operations
+    cleaned_edges = remove_artifacts(edges, size=7, iterations=2)
+
+    # Step 2: Find all contours in the cleaned edge image
+    contours, _ = cv2.findContours(
+        cleaned_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    # Step 3: Concatenate all contour points into a single array to form a combined outline
+    all_points = np.vstack(contours)
+
+    # Step 4: Compute the convex hull of the combined points to get a single outer boundary
+    hull = cv2.convexHull(all_points)
+
+    # Step 5: Draw the outer contour on a blank image
+    outer_contour_image = np.zeros_like(edges)
+    cv2.drawContours(outer_contour_image, [hull], -1, (255, 255, 255), thickness=2)
+
+    return outer_contour_image
 
 
 def extract_walls(image_initial: Image) -> List[np.ndarray]:
@@ -177,8 +229,9 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     wall_contours = get_wall_contours(cleaned_image)
     logger.info("Wall contours extracted.")
 
-    outer_contour = draw_outer_contour(edges)
+    outer_contour = get_outer_contour(image_initial)
     cv2.imwrite("outer_contour.jpg", outer_contour)
+    logger.info("Outer contour drawn. Image written to outer_contour.jpg")
 
     # Draw on blank image
     blank_image = np.zeros_like(cleaned_image)
