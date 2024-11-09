@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import ViewWindows from "./components/Viewwindows";
-import ThreeDViewer from "./components/ThreeDViewer";
 
 interface FileData {
   name: string;
@@ -33,13 +32,7 @@ const App: React.FC = () => {
 
   const handleFileSelect = (file: FileData) => {
     setSelectedFile(file);
-
-    // If the file is a 3D model (.gltf), switch to the 3DModel view
-    if (file.url.endsWith(".gltf")) {
-      setCurrentView("3DModel");
-    } else {
-      setCurrentView("FilePreview");
-    }
+    setCurrentView("FilePreview"); // ViewWindows will handle 3D models and images
   };
 
   const handleFileDelete = (fileToDelete: FileData) => {
@@ -66,18 +59,16 @@ const App: React.FC = () => {
           floorPlanFiles={floorPlanFiles}
           onFileSelect={handleFileSelect}
           onFileDelete={handleFileDelete}
+		  elevatorFile={{
+            name: "Test 3D Model",
+  			url: "https://modelviewer.dev/shared-assets/models/Astronaut.glb",
+          }}
         />
-
-        {/* Conditional Rendering */}
-        {currentView === "3DModel" && selectedFile ? (
-          <ThreeDViewer modelPath={selectedFile.url} /> {/* Pass model path */}
-        ) : (
-          <ViewWindows
-            currentView={currentView}
-            onFileUpload={handleFileUpload}
-            selectedFile={selectedFile}
-          />
-        )}
+        <ViewWindows
+          currentView={currentView}
+          onFileUpload={handleFileUpload}
+          selectedFile={selectedFile}
+        />
       </div>
     </div>
   );

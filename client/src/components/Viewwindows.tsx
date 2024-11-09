@@ -16,9 +16,16 @@ interface ViewWindowsProps {
 
 // Component to render the 3D model
 const Model: React.FC<{ path: string }> = ({ path }) => {
-  const { scene } = useGLTF(path); // Load the GLTF model
-  return <primitive object={scene} scale={0.5} />;
-};
+    try {
+      console.log("Loading model from path:", path);
+      const { scene } = useGLTF(path); // Load the GLTF model
+      return <primitive object={scene} scale={0.5} />;
+    } catch (error) {
+      console.error("Error loading GLTF model:", error);
+      return <p>Failed to load model.</p>;
+    }
+  };
+  
 
 const ViewWindows: React.FC<ViewWindowsProps> = ({
   currentView,

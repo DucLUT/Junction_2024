@@ -12,6 +12,7 @@ interface SidebarProps {
   floorPlanFiles: FileData[];
   onFileSelect: (file: FileData) => void;
   onFileDelete: (file: FileData) => void; // Handle file deletion
+  elevatorFile: FileData; // Elevator 3D model passed as a prop
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -19,12 +20,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   floorPlanFiles,
   onFileSelect,
   onFileDelete,
+  elevatorFile,
 }) => {
-  const elevatorFile: FileData = {
-    name: "Elevator 3D Model",
-    url: "/SiteMaterial/Material to share/Site 1/elevator.gltf", // Path to the model
-  };
-
   return (
     <aside className="sidebar">
       <h2 className="sidebar-title">Project Browser</h2>
