@@ -38,26 +38,23 @@ def preprocess_image(image: Image) -> np.ndarray:
     return blurred_image
 
 
-def unwanted_features_mask(edges: np.ndarray) -> np.ndarray:
+def remove_artifacts(edges: np.ndarray, size: int, iterations: int = 1) -> np.ndarray:
     """
-    Apply morphological operations to clean up the edges in the image.
+    Remove artifacts from the image using morphological operations.
     """
-    # Apply larger morphological kernel to clean up the image
-    kernel = np.ones((7, 7), np.uint8)  # Increase kernel size for larger structures
-    unwanted_features = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-    unwanted_features = cv2.morphologyEx(unwanted_features, cv2.MORPH_OPEN, kernel)
+    kernel = np.ones((size, size), np.uint8)
+    artifact_filter = cv2.morphologyEx(
+        edges, cv2.MORPH_CLOSE, kernel, iterations=iterations
+    )
+    artifact_filter = cv2.morphologyEx(
+        artifact_filter, cv2.MORPH_OPEN, kernel, iterations=iterations
+    )
 
-    # Apply dilation followed by erosion with more iterations
-    unwanted_features = cv2.dilate(
-        unwanted_features, kernel, iterations=3
-    )  # Increase iterations
-    cv2.imwrite("unwanted_features_before_erode.jpg", unwanted_features)
+    artifact_filter = cv2.dilate(artifact_filter, kernel, iterations=3)
+    artifact_filter = cv2.erode(artifact_filter, kernel, iterations=2)
 
-    unwanted_features = cv2.erode(unwanted_features, kernel, iterations=2)
-
-    cv2.imwrite("unwanted_features.jpg", unwanted_features)
-
-    return unwanted_features
+    cleaned_image = cv2.bitwise_and(edges, edges, mask=cv2.bitwise_not(artifact_filter))
+    return cleaned_image
 
 
 def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
@@ -103,8 +100,10 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
         List[np.ndarray]: A list of wall contours.
     """
     logger.info("Processing image...")
+
     # Preprocess the image
     preprocessed_image_array: np.ndarray = preprocess_image(image_initial)
+    logger.info("Image preprocessed.")
 
     # Apply adaptive thresholding
     binary_img = cv2.adaptiveThreshold(
@@ -115,29 +114,39 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
         11,
         2,
     )
+    logger.info("Adaptive thresholding applied.")
 
     # Perform Canny edge detection
     edges = cv2.Canny(binary_img, 50, 150)
     cv2.imwrite("edges.jpg", edges)
+    logger.info("Canny edge detection performed. Image written to edges.jpg")
 
-    # Mask for unwanted features
-    unwanted_features = unwanted_features_mask(edges)
+    # Clean unwanted features
+    cleaned_image = remove_artifacts(edges, 7, 1)
+    cv2.imwrite("cleaned_image_1.jpg", cleaned_image)
+    logger.info(
+        "First artifact removal step completed. Image written to cleaned_image_1.jpg"
+    )
 
-    wall_only_mask = cv2.bitwise_not(unwanted_features)
-    # Mask the walls in the edges image
-    walls_extracted = cv2.bitwise_and(edges, edges, mask=wall_only_mask)
-    cv2.imwrite("walls_extracted.jpg", walls_extracted)
+    artifact_removal_step: int = 2
+    while artifact_removal_step < 4:
+        size = 3
+        cleaned_image = remove_artifacts(cleaned_image, size, artifact_removal_step)
+        cv2.imwrite(f"cleaned_image_{artifact_removal_step}.jpg", cleaned_image)
+        logger.info(
+            "Artifact removal step %d completed. Image written to cleaned_image_%d.jpg",
+            artifact_removal_step,
+            artifact_removal_step,
+        )
+        artifact_removal_step += 1
 
-    # Additional morphological operations to remove artifacts and non-wall features
-    kernel = np.ones((3, 3), np.uint8)
-    walls_extracted = cv2.morphologyEx(walls_extracted, cv2.MORPH_CLOSE, kernel)
-    walls_extracted = cv2.morphologyEx(walls_extracted, cv2.MORPH_OPEN, kernel)
-
-    wall_contours = get_wall_contours(walls_extracted)
+    wall_contours = get_wall_contours(cleaned_image)
+    logger.info("Wall contours extracted.")
 
     # Draw on blank image
-    blank_image = np.zeros_like(walls_extracted)
+    blank_image = np.zeros_like(cleaned_image)
     cv2.drawContours(blank_image, wall_contours, -1, (255, 255, 255), 2)
     cv2.imwrite("walls_contours.jpg", blank_image)
+    logger.info("Contours drawn on blank image. Image written to walls_contours.jpg")
 
     return wall_contours
