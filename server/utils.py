@@ -58,6 +58,40 @@ def get_cleaned_edges(edges: np.ndarray) -> np.ndarray:
     return cleaned_edges
 
 
+def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
+    """
+    Get wall contours from the cleaned image.
+
+    Args:
+        cleaned_image (np.ndarray): The cleaned image.
+
+    Returns:
+        List[np.ndarray]: A list of wall contours.
+    """
+    # Find contours on the cleaned image
+    contours, _ = cv2.findContours(
+        cleaned_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    wall_contours = []
+    for cnt in contours:
+        # Approximate the contour to reduce the number of points
+        approx = cv2.approxPolyDP(cnt, 3, True)
+
+        # Calculate the bounding rectangle of the contour
+        _, _, w, h = cv2.boundingRect(approx)
+
+        # Calculate the aspect ratio and area of the bounding rectangle
+        aspect_ratio = float(w) / h
+        area = cv2.contourArea(approx)
+
+        # Filter contours based on aspect ratio and area
+        if 0.2 < aspect_ratio < 5.0 and area > 1000:
+            wall_contours.append(approx)
+
+    return wall_contours
+
+
 def extract_walls(image_initial: Image) -> List[np.ndarray]:
     """
     Extract wall contours from the initial image.
@@ -94,30 +128,11 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     walls_extracted = cv2.bitwise_and(edges, edges, mask=wall_only_mask)
     cv2.imwrite("walls_extracted.jpg", walls_extracted)
 
-    # Find contours on the cleaned edges
-    contours, _ = cv2.findContours(
-        walls_extracted, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    wall_contours = get_wall_contours(walls_extracted)
 
-    wall_contours = []
-    for cnt in contours:
-        # Approximate the contour to reduce the number of points
-        approx = cv2.approxPolyDP(cnt, 3, True)
-
-        # Calculate the bounding rectangle of the contour
-        _, _, w, h = cv2.boundingRect(approx)
-
-        # Calculate the aspect ratio and area of the bounding rectangle
-        aspect_ratio = float(w) / h
-        area = cv2.contourArea(approx)
-
-        # Filter contours based on aspect ratio and area
-        if 0.2 < aspect_ratio < 5.0 and area > 1000:
-            wall_contours.append(approx)
-
-    # Create a blank image to draw the contours
-    contour_image = np.zeros_like(preprocessed_image_array)
-    cv2.drawContours(contour_image, wall_contours, -1, (255, 255, 255), 2)
-    cv2.imwrite("wall_contours.jpg", contour_image)
+    # Draw on blank image
+    blank_image = np.zeros_like(walls_extracted)
+    cv2.drawContours(blank_image, wall_contours, -1, (255, 255, 255), 2)
+    cv2.imwrite("walls_contours.jpg", blank_image)
 
     return wall_contours
