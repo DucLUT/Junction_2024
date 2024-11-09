@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class FloorplanSegmentationDataset(Dataset):
     """
-    Dataset class for floorplan segmentation.
+    Dataset class for floorplan segmentation with lazy loading and batching of patches.
     """
 
     def __init__(
@@ -26,9 +26,10 @@ class FloorplanSegmentationDataset(Dataset):
         floorplan_dir,
         annotation_file,
         transform=None,
-        patch_size=(128, 128),  # Reduce the patch size
-        stride=(64, 64),  # Adjust the stride to balance patch overlap
+        patch_size=(128, 128),
+        stride=(64, 64),
         limit=None,
+        patches_per_batch=10,  # Number of patches to load in each batch per image
     ):
         """
         Args:
@@ -38,12 +39,14 @@ class FloorplanSegmentationDataset(Dataset):
             patch_size (tuple): The desired output patch size.
             stride (tuple): The stride for sliding window.
             limit (int, optional): Maximum number of images to load for testing.
+            patches_per_batch (int): Number of patches to load per batch per image.
         """
         self.floorplan_dir = floorplan_dir
         self.annotation_file = annotation_file
         self.transform = transform
         self.patch_size = patch_size
         self.stride = stride
+        self.patches_per_batch = patches_per_batch
         self.counter = 0
 
         logger.info("Loading annotations from %s", annotation_file)
@@ -60,19 +63,71 @@ class FloorplanSegmentationDataset(Dataset):
         logger.info("Found %d floorplan images", len(self.image_files))
 
     def __len__(self):
-        return len(self.image_files)
+        total_patches = 0
+        for img_file in self.image_files:
+            img_path = os.path.join(self.floorplan_dir, img_file)
+            image = Image.open(img_path).convert("RGB")
+            mask = self.get_mask(image, img_file)
+            img_patches, _ = self.extract_all_patches(image, mask)
+            total_patches += len(img_patches)
+
+        # Log total number of patches
+        logger.info(f"Total patches in the dataset: {total_patches}")
+
+        return total_patches // self.patches_per_batch
 
     def __getitem__(self, idx):
-        img_name = self.image_files[idx]
-        img_path = os.path.join(self.floorplan_dir, img_name)
+        """
+        Get a batch of patches from the dataset.
+        Instead of returning a single image, return a batch of patches.
+        """
+        img_batch = []
+        mask_batch = []
 
-        # Log image loading
-        logger.info(f"Loading image {img_name} from {img_path}")
-        image = Image.open(img_path).convert("RGB")
-        logger.info(f"Loaded image size: {image.size}")
+        total_patches = 0
+        for img_name in self.image_files:
+            img_path = os.path.join(self.floorplan_dir, img_name)
+            image = Image.open(img_path).convert("RGB")
+            mask = self.get_mask(image, img_name)
 
-        # Get the corresponding annotation for this image
-        img_id = os.path.splitext(img_name)[0]
+            # Extract all patches from this image
+            img_patches, mask_patches = self.extract_all_patches(image, mask)
+
+            num_patches = len(img_patches)
+            if total_patches + num_patches > idx * self.patches_per_batch:
+                start_patch = (idx * self.patches_per_batch) - total_patches
+                end_patch = start_patch + self.patches_per_batch
+
+                img_batch.extend(img_patches[start_patch:end_patch])
+                mask_batch.extend(mask_patches[start_patch:end_patch])
+                break
+
+            total_patches += num_patches
+
+        # Log progress of loading patches
+        logger.info(f"Loaded {len(img_batch)} patches for batch {idx}")
+
+        if self.transform:
+            img_batch = [self.transform(patch) for patch in img_batch]
+            mask_batch = [
+                torch.from_numpy(np.array(mask_patch)).float().unsqueeze(0)
+                for mask_patch in mask_batch
+            ]
+
+        return torch.stack(img_batch), torch.stack(mask_batch)
+
+    def get_mask(self, image: Image.Image, filename: str):
+        """
+        Get the mask for a given image based on the annotations.
+
+        Args:
+            image (Image.Image): The input image.
+            filename (str): The image file name used to get the correct mask.
+
+        Returns:
+            Image.Image: The mask image for the floorplan.
+        """
+        img_id = os.path.splitext(filename)[0]  # Extract filename without extension
         mask = np.zeros((image.height, image.width), dtype=np.float32)
 
         # Fill the mask with wall annotations
@@ -82,45 +137,31 @@ class FloorplanSegmentationDataset(Dataset):
                 y_coords = np.array(data["y"], dtype=int)
                 mask[y_coords, x_coords] = 1  # Mark these as walls
 
-        mask = Image.fromarray(mask)
+        return Image.fromarray(mask)
 
-        # Extract a single patch
-        img_patch, mask_patch = self.extract_patch(image, mask)
-
-        # Log patch extraction details
-        logger.info(f"Extracted patch size: {img_patch.size}")
-
-        # Apply transformations if any
-        if self.transform:
-            img_patch = self.transform(img_patch)
-            mask_patch = torch.from_numpy(np.array(mask_patch)).float().unsqueeze(0)
-
-        # Return as tensors (ensure that it returns an image and mask tuple)
-        return img_patch, mask_patch
-
-    def extract_patch(self, image: Image.Image, mask: Image.Image):
+    def extract_all_patches(self, image: Image.Image, mask: Image.Image):
         """
-        Extract a single patch from the image and mask.
-
-        Args:
-            image (Image.Image): The input image.
-            mask (Image.Image): The corresponding mask.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A single image and mask patch.
+        Extract all patches from the image and mask using sliding window.
         """
         img_width, img_height = image.size
         patch_width, patch_height = self.patch_size
         stride_x, stride_y = self.stride
 
-        # Randomly select a patch position to avoid bias from the dataset
-        x = np.random.randint(0, img_width - patch_width)
-        y = np.random.randint(0, img_height - patch_height)
+        img_patches = []
+        mask_patches = []
 
-        img_patch = image.crop((x, y, x + patch_width, y + patch_height))
-        mask_patch = mask.crop((x, y, x + patch_width, y + patch_height))
+        # Slide a window across the image to extract all patches
+        for y in range(0, img_height - patch_height + 1, stride_y):
+            for x in range(0, img_width - patch_width + 1, stride_x):
+                img_patch = image.crop((x, y, x + patch_width, y + patch_height))
+                mask_patch = mask.crop((x, y, x + patch_width, y + patch_height))
 
-        return img_patch, mask_patch
+                img_patches.append(img_patch)
+                mask_patches.append(mask_patch)
+
+        # Log the number of patches extracted
+        logger.info(f"Extracted {len(img_patches)} patches from image.")
+        return img_patches, mask_patches
 
 
 class UNet(nn.Module):
@@ -214,10 +255,6 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Forward pass
             outputs = model(images)
 
-            # Ensure the masks have a channel dimension
-            masks = masks.unsqueeze(1)  # Add channel dimension to masks if needed
-            masks = masks.squeeze(1)  # Remove channel dimension if needed
-
             # Compute loss
             loss = criterion(outputs, masks)
 
@@ -225,7 +262,7 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             loss.backward()
             optimizer.step()
 
-            # Log GPU memory usage
+            # Log GPU memory usage and loss
             if torch.cuda.is_available():
                 logger.info(
                     f"GPU Memory Allocated (after step {batch_idx}): {torch.cuda.memory_allocated() / 1024**2:.2f} MB"
