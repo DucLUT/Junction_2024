@@ -149,11 +149,16 @@ def get_outer_contour(edges: np.ndarray) -> np.ndarray:
     Extracts the outermost contour from the precomputed edges by combining all detected wall edges.
 
     Args:
-        edges (np.ndarray): An edge-detected binary image where walls are represented by white pixels (255) on a black background (0).
+        edges (np.ndarray): An edge-detected binary image where walls are represented
+                            by white pixels (255) on a black background (0).
 
     Returns:
         np.ndarray: An image containing only the outer contour of the floorplan.
     """
+    # Ensure edges is a numpy array
+    if not isinstance(edges, np.ndarray):
+        raise ValueError("The 'edges' parameter must be a numpy array.")
+
     # Step 1: Remove small artifacts from the edges using morphological operations
     cleaned_edges = remove_artifacts(edges, size=7, iterations=2)
 
@@ -229,7 +234,7 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     wall_contours = get_wall_contours(cleaned_image)
     logger.info("Wall contours extracted.")
 
-    outer_contour = get_outer_contour(image_initial)
+    outer_contour = get_outer_contour(edges)
     cv2.imwrite("outer_contour.jpg", outer_contour)
     logger.info("Outer contour drawn. Image written to outer_contour.jpg")
 
