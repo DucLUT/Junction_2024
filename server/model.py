@@ -282,7 +282,7 @@ def main():
         annotation_file,
         transform=transform,
         img_size=(256, 256),
-        limit=None,
+        limit=10,
     )
     train_data, val_data = train_test_split(dataset, test_size=0.2, random_state=42)
 
