@@ -27,7 +27,12 @@ class FloorplanSegmentationDataset(Dataset):
     """
 
     def __init__(
-        self, floorplan_dir, annotation_file, transform=None, img_size=(256, 256)
+        self,
+        floorplan_dir,
+        annotation_file,
+        transform=None,
+        img_size=(256, 256),
+        limit=None,
     ):
         """
         Args:
@@ -35,6 +40,7 @@ class FloorplanSegmentationDataset(Dataset):
             annotation_file (str): Path to the JSON file containing annotations.
             transform (callable, optional): Optional transform to be applied on a sample.
             img_size (tuple): The desired output image and mask size.
+            limit (int, optional): Maximum number of images to load for testing.
         """
         self.floorplan_dir = floorplan_dir
         self.annotation_file = annotation_file
@@ -43,13 +49,15 @@ class FloorplanSegmentationDataset(Dataset):
         self.counter = 0
 
         logger.info("Loading annotations from %s", annotation_file)
-        # Load the annotations
         with open(annotation_file, "r", encoding="utf-8") as f:
             self.annotations = json.load(f)
 
         logger.info("Listing all floorplan images in %s", floorplan_dir)
-        # List all floorplan images (assuming they are PNGs)
         self.image_files = [f for f in os.listdir(floorplan_dir) if f.endswith(".png")]
+
+        # Apply the limit if specified
+        if limit is not None:
+            self.image_files = self.image_files[:limit]
 
         logger.info("Found %d floorplan images", len(self.image_files))
 
@@ -83,7 +91,8 @@ class FloorplanSegmentationDataset(Dataset):
         # Apply transformations
         if self.transform:
             image = self.transform(image)
-            mask = transforms.ToTensor()(mask)  # Convert mask to tensor
+            mask = torch.from_numpy(np.array(mask)).float().unsqueeze(0)
+            mask = mask.squeeze()
 
         logger.info(
             "Loaded %d/%d images (%.2f%%)",
@@ -91,6 +100,7 @@ class FloorplanSegmentationDataset(Dataset):
             len(self.image_files),
             (self.counter + 1) / len(self.image_files) * 100,
         )
+
         self.counter += 1
 
         return image, mask
@@ -131,6 +141,11 @@ class UNet(nn.Module):
             nn.ConvTranspose2d(64, out_channels, kernel_size=2, stride=2),
         )
 
+        # Add an upsampling layer to match target size
+        self.upsample = nn.Upsample(
+            size=(256, 256), mode="bilinear", align_corners=False
+        )
+
     def forward(self, x):
         """
         Forward pass of the U-Net model.
@@ -138,6 +153,7 @@ class UNet(nn.Module):
         x1 = self.encoder(x)
         x2 = self.middle(x1)
         x3 = self.decoder(x2)
+        x3 = self.upsample(x3)  # Ensure output size is 256x256
         return x3
 
     def summary(self):
@@ -221,6 +237,10 @@ def evaluate_model(model, val_loader):
             # Convert logits to binary (0 or 1)
             preds = torch.sigmoid(outputs) > 0.5
 
+            # Ensure preds and masks are of the same type
+            preds = preds.float()
+            masks = masks.float()
+
             # Calculate Dice score
             intersection = (preds & masks).sum()
             union = preds.sum() + masks.sum()
@@ -247,8 +267,13 @@ def main():
         ]
     )
 
+    # Set a limit of 10 images for faster testing
     dataset = FloorplanSegmentationDataset(
-        floorplan_dir, annotation_file, transform=transform, img_size=(256, 256)
+        floorplan_dir,
+        annotation_file,
+        transform=transform,
+        img_size=(256, 256),
+        limit=10,
     )
     train_data, val_data = train_test_split(dataset, test_size=0.2, random_state=42)
 
