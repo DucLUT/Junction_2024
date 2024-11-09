@@ -302,7 +302,9 @@ def main():
     logger.info("Training completed.")
 
     # Save the trained model
-    torch.save_model(trained_model, "model.pth")
+    save_path = "model.pth"
+    torch.save(trained_model.state_dict(), save_path)
+    logger.info(f"Trained model saved at {save_path}")
 
     logger.info("Starting evaluation...")
     evaluate_model(trained_model, val_loader, device)
