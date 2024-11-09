@@ -1,0 +1,39 @@
+.navbar {
+    display: flex;
+    position: fixed; /* Fixed to the top of the viewport */
+    top: 0;
+    left: 0;
+    width: 100%; /* Full width */
+    justify-content: space-between; /* Space out content */
+    align-items: center;
+    padding: 1rem;
+    background-color: #8b6767; /* Updated background color */
+    color: #fff; /* White text */
+    z-index: 1001;
+
+}
+
+.brand {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.nav-list {
+    list-style-type: none;
+    display: flex;
+    gap: 1rem;
+    margin: 0;
+    padding: 0;
+}
+
+.nav-link {
+    color: #fff;
+    text-decoration: none;
+    font-size: 1rem;
+    cursor: pointer;
+    padding-right: 1.5rem;
+}
+
+.nav-link:hover {
+    text-decoration: underline; /* Add hover effect for links */
+}
