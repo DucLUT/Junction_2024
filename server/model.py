@@ -215,41 +215,50 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
     return model
 
 
-def evaluate_model(model, val_loader):
+def evaluate_model(model, val_loader, device):
     """
-    Evaluate the U-Net model.
+    Evaluate the U-Net model on the validation data.
 
     Args:
         model (nn.Module): The U-Net model.
         val_loader (DataLoader): DataLoader for the validation data.
+        device (torch.device): The device (CPU or CUDA) on which the model and data are loaded.
     """
     model.eval()  # Set the model to evaluation mode
     total_dice_score = 0.0
     num_samples = 0
 
-    with torch.no_grad():
+    with torch.no_grad():  # Disable gradient computation during evaluation
         for images, masks in val_loader:
-            images, masks = images.cuda(), masks.cuda()
+            images, masks = images.to(device), masks.to(device)
 
             # Forward pass
             outputs = model(images)
 
-            # Convert logits to binary (0 or 1)
+            # Convert logits to binary predictions (0 or 1) using a threshold of 0.5
             preds = torch.sigmoid(outputs) > 0.5
 
-            # Ensure preds and masks are of the same type
+            # Ensure preds and masks are float for Dice score computation
             preds = preds.float()
             masks = masks.float()
 
-            # Calculate Dice score
-            intersection = (preds & masks).sum()
+            # Calculate intersection and union for Dice score
+            intersection = (preds * masks).sum()
             union = preds.sum() + masks.sum()
-            dice_score = 2 * intersection / (union + intersection)
+
+            # Avoid division by zero by checking if the intersection and union are both zero
+            if union + intersection > 0:
+                dice_score = 2 * intersection / (union + intersection)
+            else:
+                dice_score = torch.tensor(
+                    1.0
+                )  # If both are empty, assume perfect match
 
             total_dice_score += dice_score.item()
             num_samples += 1
 
-    avg_dice_score = total_dice_score / num_samples
+    # Calculate average Dice score
+    avg_dice_score = total_dice_score / num_samples if num_samples > 0 else 0.0
     logger.info("Average Dice Score: %.4f", avg_dice_score)
 
 
@@ -273,16 +282,15 @@ def main():
         annotation_file,
         transform=transform,
         img_size=(256, 256),
-        limit=10,
+        limit=None,
     )
     train_data, val_data = train_test_split(dataset, test_size=0.2, random_state=42)
 
     train_loader = DataLoader(train_data, batch_size=8, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_data, batch_size=8, shuffle=False, num_workers=4)
 
-    model = UNet(in_channels=3, out_channels=1).to(
-        torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = UNet(in_channels=3, out_channels=1).to(device)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
@@ -293,8 +301,11 @@ def main():
     )
     logger.info("Training completed.")
 
+    # Save the trained model
+    torch.save_model(trained_model, "model.pth")
+
     logger.info("Starting evaluation...")
-    evaluate_model(trained_model, val_loader)
+    evaluate_model(trained_model, val_loader, device)
     logger.info("Evaluation completed.")
 
 
