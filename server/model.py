@@ -7,12 +7,14 @@ import torch
 from torch import nn, optim
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
+from torch.amp import autocast, GradScaler
 from PIL import Image
 import numpy as np
 import tqdm  # For progress bar
 from sklearn.model_selection import train_test_split
 
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,7 @@ class FloorplanSegmentationDataset(Dataset):
             total_patches += len(img_patches)
 
         # Log total number of patches
-        logger.info(f"Total patches in the dataset: {total_patches}")
+        logger.info("Total patches in the dataset: %d", total_patches)
 
         return total_patches // self.patches_per_batch
 
@@ -105,7 +107,7 @@ class FloorplanSegmentationDataset(Dataset):
             total_patches += num_patches
 
         # Log progress of loading patches
-        logger.info(f"Loaded {len(img_batch)} patches for batch {idx}")
+        logger.info("Loaded %d patches for batch %d", len(img_batch), idx)
 
         if self.transform:
             img_batch = [self.transform(patch) for patch in img_batch]
@@ -164,7 +166,7 @@ class FloorplanSegmentationDataset(Dataset):
                 mask_patches.append(mask_patch)
 
         # Log the number of patches extracted
-        logger.info(f"Extracted {len(img_patches)} patches from image {filename}.")
+        logger.info("Extracted %d patches from image %s.", len(img_patches), filename)
         return img_patches, mask_patches
 
 
@@ -249,6 +251,7 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
         # Progress bar
         loop = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", ncols=100)
 
+        scaler = GradScaler(device="cuda")
         for batch_idx, batch in enumerate(loop):
             images, masks = batch
             # Reshape images and masks to merge patches per batch into batch dimension
@@ -263,23 +266,33 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Zero the gradients
             optimizer.zero_grad()
 
-            # Forward pass
-            outputs = model(images)
+            with autocast(device_type="cuda"):
+                # Forward pass
+                outputs = model(images)
 
-            # Compute loss
-            loss = criterion(outputs, masks)
+                # Compute loss
+                loss = criterion(outputs, masks)
 
             # Backward pass and optimization
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             # Log GPU memory usage and loss
             if torch.cuda.is_available():
                 logger.info(
-                    f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches} - GPU Memory Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB"
+                    "Epoch %d, Batch %d/%d - GPU Memory Allocated: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_allocated() / 1024**2,
                 )
                 logger.info(
-                    f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches} - GPU Memory Cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB"
+                    "Epoch %d, Batch %d/%d - GPU Memory Cached: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_reserved() / 1024**2,
                 )
 
             # Update the progress bar
@@ -287,6 +300,11 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             loop.set_postfix(loss=epoch_loss / (batch_idx + 1))
 
         logger.info("Epoch %d - Loss: %.4f", epoch + 1, epoch_loss / num_batches)
+
+        # Save model after every epoch
+        model_path = os.path.join(".", f"model_epoch_{epoch+1}.pth")
+        torch.save(model.state_dict(), model_path)
+        logger.info("Saved model to %s", model_path)
 
     return model
 
@@ -377,9 +395,9 @@ def main():
     val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
 
     train_loader = DataLoader(
-        dataset, batch_size=1, sampler=train_sampler, num_workers=1
+        dataset, batch_size=4, sampler=train_sampler, num_workers=2
     )
-    val_loader = DataLoader(dataset, batch_size=1, sampler=val_sampler, num_workers=1)
+    val_loader = DataLoader(dataset, batch_size=4, sampler=val_sampler, num_workers=2)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels=3, out_channels=1).to(device)
@@ -396,7 +414,7 @@ def main():
     # Save the trained model
     save_path = "model.pth"
     torch.save(trained_model.state_dict(), save_path)
-    logger.info(f"Trained model saved at {save_path}")
+    logger.info("Trained model saved at %s", save_path)
 
     logger.info("Starting evaluation...")
     evaluate_model(trained_model, val_loader, device)
