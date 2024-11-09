@@ -399,9 +399,9 @@ def main():
     val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
 
     train_loader = DataLoader(
-        dataset, batch_size=2, sampler=train_sampler, num_workers=2
+        dataset, batch_size=1, sampler=train_sampler, num_workers=1
     )
-    val_loader = DataLoader(dataset, batch_size=2, sampler=val_sampler, num_workers=2)
+    val_loader = DataLoader(dataset, batch_size=1, sampler=val_sampler, num_workers=1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels=3, out_channels=1).to(device)
