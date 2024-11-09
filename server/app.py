@@ -1,31 +1,14 @@
-"""
-This module provides an API for processing floorplan images.
-"""
-
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 import io
 import logging
-import subprocess
-from typing import List
-import cv2
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from PIL import Image
-import pdf2image
+import cv2
 import utils
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app: FastAPI = FastAPI()
-
-
-@app.get("/")
-async def root():
-    """
-    Root endpoint that returns a simple message.
-    """
-    return {"message": "Hello World"}
-
+app = FastAPI()
 
 @app.post("/api/floorplan")
 async def read_floorplan(request: Request, file: UploadFile = File(...)):
@@ -37,21 +20,17 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
         file (UploadFile): The uploaded file.
 
     Returns:
-        dict: A dictionary containing the wall contours.
+        dict: A dictionary containing the wall contours and line coordinates.
     """
     logger.info("Request: %s", request)
     logger.info("Headers: %s", request.headers)
     logger.info("Received file: %s", file.filename)
-
     if not file:
         raise HTTPException(status_code=400, detail="No file uploaded")
-
     contents = await file.read()
     image = None
     if file.content_type == "application/pdf":
         logger.info("Converting PDF to image")
-        # utils.read_pdf_layers(contents)
-        # there is no utils pdf to image function
         image = pdf2image.convert_from_bytes(contents)[0]
     else:
         try:
@@ -66,15 +45,37 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No valid image found")
 
     try:
-        # walls_url = utils.dalle_walls(image)
-        # logger.info("Walls URL: %s", walls_url)
-        wall_contours = utils.extract_walls(image)
-        contours_list = [
-            contour.tolist() for contour in wall_contours
-        ]  # Convert to list
+        # Preprocess the image
+        preprocessed_image = utils.preprocess_image(image)
+
+        # Process the contours
+        processed_image = utils.process_contours(preprocessed_image)
+
+        # Save the processed image to a file
+        processed_image_path = "processed_image.jpg"
+        cv2.imwrite(processed_image_path, processed_image)
+        logger.info(f"Processed image saved to {processed_image_path}")
+
+        # Extract wall contours
+       
+       
+
+        # Extract straight lines and their coordinates
+        line_image, line_coordinates = utils.keep_straight_lines(preprocessed_image)
+
+        # Save the image with lines
+        line_image_path = "line_image.jpg"
+        cv2.imwrite(line_image_path, line_image)
+        logger.info(f"Line image saved to {line_image_path}")
+
+        # Convert numpy.int32 to native Python int
+        line_coordinates = [
+            (int(x1), int(y1), int(x2), int(y2)) for (x1, y1, x2, y2) in line_coordinates
+        ]
+
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Error processing image: {exc}"
         ) from exc
 
-    return {"contours": contours_list}
+    return {"lines": line_coordinates}
