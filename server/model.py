@@ -1,12 +1,7 @@
-"""
-This module provides a dataset class for floorplans, a U-Net model for segmentation,
-and functions for training and evaluating the model.
-"""
-
 import os
 import json
 import logging
-from typing import List
+from typing import List, Tuple
 
 import torch
 from torch import nn, optim
@@ -17,13 +12,14 @@ import numpy as np
 import tqdm  # For progress bar
 from sklearn.model_selection import train_test_split
 
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
 class FloorplanSegmentationDataset(Dataset):
     """
-    Dataset class for floorplan segmentation.
+    Dataset class for floorplan segmentation with lazy loading and batching of patches.
     """
 
     def __init__(
@@ -31,21 +27,27 @@ class FloorplanSegmentationDataset(Dataset):
         floorplan_dir,
         annotation_file,
         transform=None,
-        img_size=(256, 256),
+        patch_size=(128, 128),
+        stride=(64, 64),
         limit=None,
+        patches_per_batch=10,  # Number of patches to load in each batch per image
     ):
         """
         Args:
             floorplan_dir (str): Path to the directory containing floorplan images.
             annotation_file (str): Path to the JSON file containing annotations.
             transform (callable, optional): Optional transform to be applied on a sample.
-            img_size (tuple): The desired output image and mask size.
+            patch_size (tuple): The desired output patch size.
+            stride (tuple): The stride for sliding window.
             limit (int, optional): Maximum number of images to load for testing.
+            patches_per_batch (int): Number of patches to load per batch per image.
         """
         self.floorplan_dir = floorplan_dir
         self.annotation_file = annotation_file
         self.transform = transform
-        self.img_size = img_size
+        self.patch_size = patch_size
+        self.stride = stride
+        self.patches_per_batch = patches_per_batch
         self.counter = 0
 
         logger.info("Loading annotations from %s", annotation_file)
@@ -62,22 +64,76 @@ class FloorplanSegmentationDataset(Dataset):
         logger.info("Found %d floorplan images", len(self.image_files))
 
     def __len__(self):
-        return len(self.image_files)
+        total_patches = 0
+        for img_file in self.image_files:
+            img_path = os.path.join(self.floorplan_dir, img_file)
+            image = Image.open(img_path).convert("RGB")
+            mask = self.get_mask(image, img_file)
+            img_patches, _ = self.extract_all_patches(image, mask, img_file)
+            total_patches += len(img_patches)
+
+        # Log total number of patches
+        logger.info("Total patches in the dataset: %d", total_patches)
+
+        return total_patches // self.patches_per_batch
 
     def __getitem__(self, idx):
-        img_name = self.image_files[idx]
-        img_path = os.path.join(self.floorplan_dir, img_name)
+        """
+        Get a batch of patches from the dataset.
+        Instead of returning a single image, return a batch of patches.
+        """
+        img_batch = []
+        mask_batch = []
 
-        # Load image and resize
-        image = (
-            Image.open(img_path)
-            .convert("RGB")
-            .resize(self.img_size, Image.Resampling.LANCZOS)
-        )
+        total_patches = 0
+        for img_name in self.image_files:
+            img_path = os.path.join(self.floorplan_dir, img_name)
+            image = Image.open(img_path).convert("RGB")
+            mask = self.get_mask(image, img_name)
 
-        # Get the corresponding annotation for this image
-        img_id = os.path.splitext(img_name)[0]
-        mask = np.zeros((self.img_size[1], self.img_size[0]), dtype=np.float32)
+            # Extract all patches from this image
+            img_patches, mask_patches = self.extract_all_patches(image, mask, img_name)
+
+            num_patches = len(img_patches)
+            if total_patches + num_patches > idx * self.patches_per_batch:
+                start_patch = (idx * self.patches_per_batch) - total_patches
+                end_patch = start_patch + self.patches_per_batch
+
+                img_batch.extend(img_patches[start_patch:end_patch])
+                mask_batch.extend(mask_patches[start_patch:end_patch])
+                break
+
+            total_patches += num_patches
+
+        # Log progress of loading patches
+        logger.info("Loaded %d patches for batch %d", len(img_batch), idx)
+
+        if self.transform:
+            img_batch = [self.transform(patch) for patch in img_batch]
+            mask_batch = [
+                torch.from_numpy(np.array(mask_patch)).float().unsqueeze(0)
+                for mask_patch in mask_batch
+            ]
+
+        # Stack the patches into a 4D tensor
+        img_batch = torch.stack(img_batch)
+        mask_batch = torch.stack(mask_batch)
+
+        return img_batch, mask_batch
+
+    def get_mask(self, image: Image.Image, filename: str):
+        """
+        Get the mask for a given image based on the annotations.
+
+        Args:
+            image (Image.Image): The input image.
+            filename (str): The image file name used to get the correct mask.
+
+        Returns:
+            Image.Image: The mask image for the floorplan.
+        """
+        img_id = os.path.splitext(filename)[0]  # Extract filename without extension
+        mask = np.zeros((image.height, image.width), dtype=np.float32)
 
         # Fill the mask with wall annotations
         for data in self.annotations["rect"].values():
@@ -86,24 +142,31 @@ class FloorplanSegmentationDataset(Dataset):
                 y_coords = np.array(data["y"], dtype=int)
                 mask[y_coords, x_coords] = 1  # Mark these as walls
 
-        mask = Image.fromarray(mask).resize(self.img_size, Image.Resampling.NEAREST)
+        return Image.fromarray(mask)
 
-        # Apply transformations
-        if self.transform:
-            image = self.transform(image)
-            mask = torch.from_numpy(np.array(mask)).float().unsqueeze(0)
-            mask = mask.squeeze()
+    def extract_all_patches(self, image: Image.Image, mask: Image.Image, filename: str):
+        """
+        Extract all patches from the image and mask using sliding window.
+        """
+        img_width, img_height = image.size
+        patch_width, patch_height = self.patch_size
+        stride_x, stride_y = self.stride
 
-        logger.info(
-            "Loaded %d/%d images (%.2f%%)",
-            self.counter + 1,
-            len(self.image_files),
-            (self.counter + 1) / len(self.image_files) * 100,
-        )
+        img_patches = []
+        mask_patches = []
 
-        self.counter += 1
+        # Slide a window across the image to extract all patches
+        for y in range(0, img_height - patch_height + 1, stride_y):
+            for x in range(0, img_width - patch_width + 1, stride_x):
+                img_patch = image.crop((x, y, x + patch_width, y + patch_height))
+                mask_patch = mask.crop((x, y, x + patch_width, y + patch_height))
 
-        return image, mask
+                img_patches.append(img_patch)
+                mask_patches.append(mask_patch)
+
+        # Log the number of patches extracted
+        logger.info("Extracted %d patches from image %s.", len(img_patches), filename)
+        return img_patches, mask_patches
 
 
 class UNet(nn.Module):
@@ -166,7 +229,7 @@ class UNet(nn.Module):
 
 def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
     """
-    Train the U-Net model.
+    Train the U-Net model with logging for memory usage and loss tracking.
 
     Args:
         model (nn.Module): The U-Net model.
@@ -187,7 +250,15 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
         # Progress bar
         loop = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", ncols=100)
 
-        for images, masks in loop:
+        for batch_idx, batch in enumerate(loop):
+            images, masks = batch
+            # Reshape images and masks to merge patches per batch into batch dimension
+            batch_size, patches_per_batch, channels, height, width = images.shape
+            images = images.view(
+                batch_size * patches_per_batch, channels, height, width
+            )
+            masks = masks.view(batch_size * patches_per_batch, 1, height, width)
+
             images, masks = images.cuda(), masks.cuda()
 
             # Zero the gradients
@@ -196,9 +267,6 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             # Forward pass
             outputs = model(images)
 
-            # Ensure the masks have a channel dimension
-            masks = masks.unsqueeze(1)  # Add channel dimension to masks if needed
-
             # Compute loss
             loss = criterion(outputs, masks)
 
@@ -206,11 +274,41 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10):
             loss.backward()
             optimizer.step()
 
+            # Log GPU memory usage and loss
+            if torch.cuda.is_available():
+                logger.info(
+                    "Epoch %d, Batch %d/%d - GPU Memory Allocated: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_allocated() / 1024**2,
+                )
+                logger.info(
+                    "Epoch %d, Batch %d/%d - GPU Memory Cached: %.2f MB",
+                    epoch + 1,
+                    batch_idx + 1,
+                    num_batches,
+                    torch.cuda.memory_reserved() / 1024**2,
+                )
+
             # Update the progress bar
             epoch_loss += loss.item()
-            loop.set_postfix(loss=epoch_loss / (loop.n + 1))
+            loop.set_postfix(loss=epoch_loss / (batch_idx + 1))
+
+            # Save model after every 20 batches
+            if (batch_idx + 1) % 20 == 0:
+                batch_model_path = os.path.join(
+                    ".", f"model_epoch_{epoch+1}_batch_{batch_idx+1}.pth"
+                )
+                torch.save(model.state_dict(), batch_model_path)
+                logger.info("Saved model to %s", batch_model_path)
 
         logger.info("Epoch %d - Loss: %.4f", epoch + 1, epoch_loss / num_batches)
+
+        # Save model after every epoch
+        model_path = os.path.join(".", f"model_epoch_{epoch+1}.pth")
+        torch.save(model.state_dict(), model_path)
+        logger.info("Saved model to %s", model_path)
 
     return model
 
@@ -229,7 +327,10 @@ def evaluate_model(model, val_loader, device):
     num_samples = 0
 
     with torch.no_grad():  # Disable gradient computation during evaluation
-        for images, masks in val_loader:
+        for batch_idx, batch in enumerate(val_loader):
+            logger.info("Processing batch %d", batch_idx + 1)
+
+            images, masks = batch
             images, masks = images.to(device), masks.to(device)
 
             # Forward pass
@@ -257,6 +358,8 @@ def evaluate_model(model, val_loader, device):
             total_dice_score += dice_score.item()
             num_samples += 1
 
+            logger.info("Batch %d - Dice Score: %.4f", batch_idx + 1, dice_score.item())
+
     # Calculate average Dice score
     avg_dice_score = total_dice_score / num_samples if num_samples > 0 else 0.0
     logger.info("Average Dice Score: %.4f", avg_dice_score)
@@ -271,7 +374,6 @@ def main():
 
     transform = transforms.Compose(
         [
-            transforms.Resize((256, 256)),  # Ensure all images and masks are (256, 256)
             transforms.ToTensor(),
         ]
     )
@@ -281,13 +383,25 @@ def main():
         floorplan_dir,
         annotation_file,
         transform=transform,
-        img_size=(256, 256),
-        limit=None,
+        patch_size=(256, 256),
+        stride=(128, 128),
+        limit=10,
     )
-    train_data, val_data = train_test_split(dataset, test_size=0.2, random_state=42)
 
-    train_loader = DataLoader(train_data, batch_size=8, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_data, batch_size=8, shuffle=False, num_workers=4)
+    # Split dataset into training and validation sets
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))
+    split = int(np.floor(0.2 * dataset_size))
+    np.random.shuffle(indices)
+    train_indices, val_indices = indices[split:], indices[:split]
+
+    train_sampler = torch.utils.data.SubsetRandomSampler(train_indices)
+    val_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
+
+    train_loader = DataLoader(
+        dataset, batch_size=2, sampler=train_sampler, num_workers=2
+    )
+    val_loader = DataLoader(dataset, batch_size=2, sampler=val_sampler, num_workers=2)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels=3, out_channels=1).to(device)
@@ -302,7 +416,9 @@ def main():
     logger.info("Training completed.")
 
     # Save the trained model
-    torch.save_model(trained_model, "model.pth")
+    save_path = "model.pth"
+    torch.save(trained_model.state_dict(), save_path)
+    logger.info("Trained model saved at %s", save_path)
 
     logger.info("Starting evaluation...")
     evaluate_model(trained_model, val_loader, device)
