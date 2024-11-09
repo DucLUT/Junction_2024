@@ -1,8 +1,12 @@
+"""
+This module provides functions for extracting walls from floorplan images.
+"""
+
+import logging
+from typing import List
 import cv2
 import numpy as np
 from PIL import Image
-import logging
-from typing import List
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,21 +41,17 @@ def preprocess_image(image: Image) -> np.ndarray:
 def get_cleaned_edges(edges: np.ndarray) -> np.ndarray:
     """
     Apply morphological operations to clean up the edges in the image.
-
-    Args:
-        edges (np.ndarray): The input edges.
-
-    Returns:
-        np.ndarray: The cleaned edges.
     """
-    # Apply morphological operations to clean up the image
-    kernel = np.ones((5, 5), np.uint8)
+    # Apply larger morphological kernel to clean up the image
+    kernel = np.ones((7, 7), np.uint8)  # Increase kernel size for larger structures
     cleaned_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
     cleaned_edges = cv2.morphologyEx(cleaned_edges, cv2.MORPH_OPEN, kernel)
 
-    # Apply dilation followed by erosion to preserve larger structures (walls)
-    cleaned_edges = cv2.dilate(cleaned_edges, kernel, iterations=2)
-    cleaned_edges = cv2.erode(cleaned_edges, kernel, iterations=2)
+    # Apply dilation followed by erosion with more iterations
+    cleaned_edges = cv2.dilate(
+        cleaned_edges, kernel, iterations=3
+    )  # Increase iterations
+    cleaned_edges = cv2.erode(cleaned_edges, kernel, iterations=3)
 
     cv2.imwrite("cleaned_edges.jpg", cleaned_edges)
 
@@ -61,22 +61,18 @@ def get_cleaned_edges(edges: np.ndarray) -> np.ndarray:
 def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
     """
     Get wall contours from the cleaned image.
-
-    Args:
-        cleaned_image (np.ndarray): The cleaned image.
-
-    Returns:
-        List[np.ndarray]: A list of wall contours.
     """
     # Find contours on the cleaned image
     contours, _ = cv2.findContours(
-        cleaned_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        cleaned_image,
+        cv2.RETR_TREE,
+        cv2.CHAIN_APPROX_SIMPLE,  # Use RETR_TREE to capture nested contours
     )
 
     wall_contours = []
     for cnt in contours:
         # Approximate the contour to reduce the number of points
-        approx = cv2.approxPolyDP(cnt, 3, True)
+        approx = cv2.approxPolyDP(cnt, 5, True)  # Loosen approximation tolerance
 
         # Calculate the bounding rectangle of the contour
         _, _, w, h = cv2.boundingRect(approx)
@@ -85,8 +81,10 @@ def get_wall_contours(cleaned_image: np.ndarray) -> List[np.ndarray]:
         aspect_ratio = float(w) / h
         area = cv2.contourArea(approx)
 
-        # Filter contours based on aspect ratio and area
-        if 0.2 < aspect_ratio < 5.0 and area > 1000:
+        # Relax the filtering conditions for aspect ratio and area
+        if (
+            0.1 < aspect_ratio < 10.0 and area > 500
+        ):  # Adjust thresholds for smaller walls
             wall_contours.append(approx)
 
     return wall_contours
@@ -127,6 +125,11 @@ def extract_walls(image_initial: Image) -> List[np.ndarray]:
     # Mask the walls in the edges image
     walls_extracted = cv2.bitwise_and(edges, edges, mask=wall_only_mask)
     cv2.imwrite("walls_extracted.jpg", walls_extracted)
+
+    # Additional morphological operations to remove artifacts and non-wall features
+    kernel = np.ones((3, 3), np.uint8)
+    walls_extracted = cv2.morphologyEx(walls_extracted, cv2.MORPH_CLOSE, kernel)
+    walls_extracted = cv2.morphologyEx(walls_extracted, cv2.MORPH_OPEN, kernel)
 
     wall_contours = get_wall_contours(walls_extracted)
 
