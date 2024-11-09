@@ -6,6 +6,7 @@ import io
 import logging
 import subprocess
 from typing import List
+import cv2
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from PIL import Image
@@ -65,6 +66,8 @@ async def read_floorplan(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No valid image found")
 
     try:
+        # walls_url = utils.dalle_walls(image)
+        # logger.info("Walls URL: %s", walls_url)
         wall_contours = utils.extract_walls(image)
         contours_list = [
             contour.tolist() for contour in wall_contours
