@@ -7,9 +7,33 @@ from typing import List
 import cv2
 import numpy as np
 from PIL import Image
+import fitz
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def read_pdf_layers(pdf_bytes: bytes) -> List:
+    # Open the PDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    logger.info("DOC: %s", str(doc))
+    layers: List = doc.get_layers()
+    for layer in layers:
+        logger.info("Layer name: %s, visibility: %s", layer[0], layer[1])
+
+    if len(layers) == 0:
+        logger.warning("No layers found in the PDF.")
+
+    ocgs: dict = doc.get_ocgs()
+    for ocg in ocgs:
+        logger.info("OCG name: %s, state: %s", ocg[0], ocg[1])
+
+    if len(ocgs) == 0:
+        logger.warning("No OCGs found in the PDF.")
+
+    doc.close()
+
+    return layers
 
 
 def preprocess_image(image: Image) -> np.ndarray:
